@@ -14,7 +14,7 @@ This is my template of Anki add-on developing.
 ### IDE
 The free community edition of PyCharm has good out of the box support for Python: https://www.jetbrains.com/pycharm/. You can also use other editors like Visual Studio Code.
 
- After installation of PyCharm completed, setup `External Tools`:
+After installation of PyCharm completed, setup `External Tools`:
 
 1. File>Settings>Tools>External Tools
 
@@ -41,45 +41,47 @@ The free community edition of PyCharm has good out of the box support for Python
 
 Please note that we use Python 3 only, so make sure that you use correct version when running commands below.
 
-First, clone the repository, step into newly created directory.
+1. First, clone the repository, step into newly created directory.
 
-Create a new virtual environment:
+2. Create a new virtual environment:
 
-```
-# macOS/Linux
-# You may need to run sudo apt-get install python3-venv first
-python3 -m venv .venv
+   ```
+   # macOS/Linux
+   # You may need to run sudo apt-get install python3-venv first
+   python3 -m venv .venv
 
-# Windows
-# You can also use py -3 -m venv .venv
-python -m venv .venv
-```
+   # Windows
+   # You can also use py -3 -m venv .venv
+   python -m venv .venv
+   ```
 
-Activate virtual environment:
+3. Activate virtual environment:
 
-```
-# macOS/Linux
-source .venv/bin/activate
-# This script is written for the bash shell. If you use the **csh** or **fish** shells, 
-# there are alternate `activate.csh` and `activate.fish` scripts you should use instead.
+   ```
+   # macOS/Linux
+   source .venv/bin/activate
+   # This script is written for the bash shell. If you use the **csh** or **fish** shells,
+   # there are alternate `activate.csh` and `activate.fish` scripts you should use instead.
 
-# Windows
-# Pycharm
-.venv\Scripts\activate.bat
-# VSCode
-.venv\Scripts\activate.ps1
-```
+   # Windows
+   # Pycharm
+   .venv\Scripts\activate.bat
+   # VSCode
+   .venv\Scripts\activate.ps1
+   ```
 
-Update pip:
+4. Configure Project Interpreter in Pycharm settings > Project > Project Interpreter
 
-```
-pip -V
-pip install --upgrade pip
-```
+5. Update pip:
 
-Then, install all the required dependencies:
+   ```
+   pip -V
+   pip install --upgrade pip
+   ```
 
-```
-pip install -r requirements.txt
-```
+6. Then, install all the required dependencies:
+
+   ```
+   pip install -r requirements.txt
+   ```
 
