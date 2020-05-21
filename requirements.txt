@@ -1,5 +1,5 @@
 
-########################        Developing Environment          ########################
+########################                Anki                    ########################
 
 # Mypy is essentially a Python linter on steroids, and it can catch many
 # programming errors by analyzing your program, without actually having to run it.
@@ -24,6 +24,23 @@ PyQt5
 anki
 ankirspy
 aqt
+
+########################              Web Scraping              ########################
+
+# For beginners to the world of web scraping, you should use Scrapy over BeautifulSoup.
+# Scrapy will solve numerous problems for you that you would otherwise have to handle yourself.
+
+# A high-level Web Crawling and Web Scraping framework
+# Python 3.4+ required
+Scrapy3
+
+# Library that scrapes information from web pages.
+# BeautifulSoup alone is not enough because you have to actually get the webpage in the first place
+# and this leads people to using something like requests or urllib2 to do that part.
+# beautifulsoup4
+
+# Python HTTP for Humans. Simple, yet elegant
+# requests
 
 ########################            Developing Tools            ########################
 
