@@ -31,8 +31,7 @@ aqt
 # Scrapy will solve numerous problems for you that you would otherwise have to handle yourself.
 
 # A high-level Web Crawling and Web Scraping framework
-# Python 3.4+ required
-Scrapy3
+scrapy
 
 # Library that scrapes information from web pages.
 # BeautifulSoup alone is not enough because you have to actually get the webpage in the first place
