@@ -19,13 +19,16 @@ import os
 import sys
 
 
+# current module's directory
+cur_dir = os.path.dirname(__file__)
+# logging set up
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
                     datefmt='%m-%d %H:%M',
-                    filename=os.path.dirname(sys.modules[__name__].__file__) + '/logger.log',
+                    filename=os.path.join(cur_dir, 'logger.log'),
                     filemode='w')
 # print the module's directory
-logging.info(os.path.dirname(sys.modules[__name__].__file__))
+logging.info(cur_dir)
 
 
 # import test module if exist
