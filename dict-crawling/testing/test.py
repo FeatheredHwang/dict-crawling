@@ -12,14 +12,13 @@ import re
 from PyQt5.QtWidgets import QAction
 from aqt import mw
 
-field = 'New Words'
-
 
 def do_test():
     """
     For testing convenience
     """
     logging.info('Hello World')
+
     # model = mw.col.models.byName('Plain Text')
     # note_ids = mw.col.find_notes("note:Basic")
     # logging.info(note_ids)
@@ -38,8 +37,9 @@ def do_test():
             continue
         # Remove div tag and leading/trailing whitespaces
         text = re.sub(r'<[/]?div>', '', text).strip()
-        words = re.split(r'\s?[,;]\s?', text)
-        logging.info(words)
+        # Expressions
+        exprs = re.split(r'\s?[,;]\s?', text)
+        logging.info(exprs)
 
 
 test_action = QAction("TEST DICT CRAWLING...", mw)
