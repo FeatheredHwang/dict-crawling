@@ -109,7 +109,16 @@ class CamDictSpider(scrapy.Spider):
         # return response.css('.uk .daud').get()
         print(response.url)
 
-
+        # IF redirect needed, follow the redirect link.
+        # For example, 'selected' is the past simple and past participle of 'select',
+        # so it will be redirected to 'select'
+        ref = response.css('a.Ref::attr(href)').get()
+        if ref:
+            return response.follow(
+                ref,
+                callback=self.parse,
+                meta={'q': response.meta.get('q')}
+            )
 
         il = EnExprLoader(item=EnExprItem(), response=response)
         # m = re.match(r'(?P<base>.*[/])(?P<expr>[a-z-]+)([?]q=(?P<query>[a-zA-Z0-9%]*))?', response.request.url)
