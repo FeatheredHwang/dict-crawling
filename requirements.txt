@@ -42,6 +42,10 @@ scrapy
 # requests
 
 ########################            Developing Tools            ########################
+# MongoDB database
+pymongo
+
+########################            Developing Tools            ########################
 
 # Pylint is a Python static code analysis tool which looks for programming errors.
 pylint
