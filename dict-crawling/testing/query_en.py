@@ -1,4 +1,4 @@
-import re
+# import re
 
 import pymongo
 
@@ -24,10 +24,11 @@ class EnExprItem(scrapy.Item):
     # files = scrapy.Field()
 
 
+
+
 class CamDictSpider(scrapy.Spider):
     name = 'cambridge_dict_spider'
     allowed_domains = ['dictionary.cambridge.org']
-    # start_urls = ['https://dictionary.cambridge.org/dictionary/english/recoil']
 
     custom_settings = {
         # To get the user-agent required for cambridge.org,
@@ -43,10 +44,16 @@ class CamDictSpider(scrapy.Spider):
 
     }
 
-    def __init__(self, expr=None, *args, **kwargs):
+    def __init__(self, exprs=None, *args, **kwargs):
         super(CamDictSpider, self).__init__(*args, **kwargs)
-        expr = ['recoil', 'blow OFF', ' spELL']
-        self.start_urls = ['https://dictionary.cambridge.org/dictionary/english/%s' % q for q in expr]
+        exprs = ['recoil', 'blow OFF', ' spELL']
+        # self.start_urls = [ for q in expr]
+        for q in exprs:
+            scrapy.Request(
+                'https://dictionary.cambridge.org/dictionary/english/%s' % q,
+                callback=self.parse,
+                meta={'q': q}
+            )
 
     # def start_requests(self):
     #     yield scrapy.Request('https://dictionary.cambridge.org/dictionary/english/%s' % self.word)
@@ -61,20 +68,22 @@ class CamDictSpider(scrapy.Spider):
         # print(response.request.url)
 
         il = ItemLoader(item=EnExprItem(), response=response)
-        m = re.match(r'(?P<base>.*[/])(?P<expr>[a-z-]+)([?]q=(?P<query>[a-zA-Z0-9%]*))?', response.request.url)
-        q = m.group('query')
-        if not q:
-            q = m.group('expr')
-        else:
-            # Replace '%2B' with whitespace in expression
-            q = re.sub(r'%2B', ' ', q)
-        il.add_value('q', q)
-        il.add_value('url', m.group('base') + m.group('expr'))
+        # m = re.match(r'(?P<base>.*[/])(?P<expr>[a-z-]+)([?]q=(?P<query>[a-zA-Z0-9%]*))?', response.request.url)
+        # q = m.group('query')
+        # if not q:
+        #     q = m.group('expr')
+        # else:
+        #     # Replace '%2B' with whitespace in expression
+        #     q = re.sub(r'%2B', ' ', q)
+        # il.add_value('q', q)
+        # il.add_value('url', m.group('base') + m.group('expr'))
+        il.add_value('q', response.meta.get('q'))
+        il.add_value('url', response.request.url)
         il.add_css('expr', '.dhw')
         il.add_css('cat', '.dpos')
         il.add_css('pron', '.uk')
         il.add_css('define', '#cald4-1-1+ .dsense_b .ddef_d')
-        # print(il.load_item())
+        print(il.load_item())
         return il.load_item()
 
     # @staticmethod
