@@ -155,11 +155,10 @@ class CamDictSpider(scrapy.Spider):
         # il.add_value('q', q)
         # il.add_value('url', m.group('base') + m.group('expr'))
 
-        # Session
         il.add_value('q', response.meta.get('q'))
         il.add_value('url', response.url)
-        il.add_css('expr', 'span.dhw::text')
-        il.add_css('cat', '.dpos::text')
+        il.add_css('expr', 'span.dhw::text', take_first)
+        il.add_css('cat', '.dpos::text', take_first)
         # As Anki2.1 doesn't support HTML5 audio, I have to download the audio file.
         # get uk pronunciation url
         src = response.css('.uk .daud source[type="audio/ogg"]::attr(src)').get()
