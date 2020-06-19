@@ -33,6 +33,9 @@ aqt
 # A high-level Web Crawling and Web Scraping framework
 scrapy
 
+# dependence of FilesPipeline
+pillow
+
 # Library that scrapes information from web pages.
 # BeautifulSoup alone is not enough because you have to actually get the webpage in the first place
 # and this leads people to using something like requests or urllib2 to do that part.

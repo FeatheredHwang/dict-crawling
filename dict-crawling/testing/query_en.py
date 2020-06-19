@@ -1,12 +1,17 @@
 # import re
+import hashlib
+import logging
+import os
+from pathlib import PurePath
 
 import pymongo
 
 import scrapy
 from scrapy.crawler import CrawlerProcess
 from scrapy.loader import ItemLoader
-
 from scrapy.loader.processors import Join, MapCompose, TakeFirst
+from scrapy.pipelines.images import FilesPipeline
+from scrapy.utils.python import to_bytes
 from w3lib.html import remove_tags
 
 
@@ -41,6 +46,22 @@ class MongoPipeline:
         return item
 
 
+class UKPronPipeline(FilesPipeline):
+
+    def file_path(self, request, response=None, info=None):
+        # original_path = super(UKPronPipeline, self).file_path(request, response=None, info=None)
+        # Get sha1 of file
+        # media_guid = hashlib.sha1(to_bytes(request.url)).hexdigest()
+        # Get extension of file
+        media_ext = os.path.splitext(request.url)[1]
+        # Download ogg files only
+        if media_ext != '.ogg':
+            logging.info('Ogg file of "%s" not found.')
+        # delete 'full/' from the path
+        # return 'full/%s%s' % (media_guid, media_ext)
+        return 'downloads/%s' % (os.path.basename(request.url))
+
+
 class EnExprItem(scrapy.Item):
     # query
     q = scrapy.Field()
@@ -50,16 +71,18 @@ class EnExprItem(scrapy.Item):
     expr = scrapy.Field()
     # category
     cat = scrapy.Field()
-    # pronunciation
-    pron = scrapy.Field()
     # definition
     define = scrapy.Field()
-    # file_urls = scrapy.Field()
-    # files = scrapy.Field()
+    # pronunciation
+    pron = scrapy.Field()
+    file_urls = scrapy.Field()
+    files = scrapy.Field()
 
 
 class EnExprLoader(ItemLoader):
-    default_input_processor = TakeFirst()
+    """
+    Nothing changed yet.
+    """
 
 
 class CamDictSpider(scrapy.Spider):
@@ -75,10 +98,11 @@ class CamDictSpider(scrapy.Spider):
         "USER_AGENT": 'Mozilla/5.0 (X11; Linux x86_64) '
                       'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.97 Safari/537.36',
         'ITEM_PIPELINES': {
-            'scrapy.pipelines.files.FilesPipeline': 1,
+            # 'scrapy.pipelines.files.FilesPipeline': 300
+            'dict-crawling.testing.query_en.UKPronPipeline': 10,
             'dict-crawling.testing.query_en.MongoPipeline': 100,
         },
-        # 'FILES_STORE': str(PurePath(__file__).parent.joinpath('CamDictPipeline')),
+        'FILES_STORE': os.path.dirname(__file__),
         'MONGO_URI': 'mongodb://localhost:27017',
         'MONGO_DATABASE': 'sivji-sandbox',
     }
@@ -102,11 +126,9 @@ class CamDictSpider(scrapy.Spider):
             )
 
     def parse(self, response):
-        # get uk pronunciation url
-        # src = response.css('.uk .daud source[type="audio/mpeg"]::attr(src)').get()
-        # url = response.urljoin(src)
-        # return EnWordItem(file_urls=[url])
-        # return response.css('.uk .daud').get()
+
+        take_first = TakeFirst()
+
         print(response.url)
 
         # IF redirect needed, follow the redirect link.
@@ -121,6 +143,8 @@ class CamDictSpider(scrapy.Spider):
             )
 
         il = EnExprLoader(item=EnExprItem(), response=response)
+        # il.default_input_processor = take_first
+
         # m = re.match(r'(?P<base>.*[/])(?P<expr>[a-z-]+)([?]q=(?P<query>[a-zA-Z0-9%]*))?', response.request.url)
         # q = m.group('query')
         # if not q:
@@ -130,16 +154,23 @@ class CamDictSpider(scrapy.Spider):
         #     q = re.sub(r'%2B', ' ', q)
         # il.add_value('q', q)
         # il.add_value('url', m.group('base') + m.group('expr'))
+
+        # Session
         il.add_value('q', response.meta.get('q'))
         il.add_value('url', response.url)
         il.add_css('expr', 'span.dhw::text')
-        il.add_css('cat', '.dpos')
-        il.add_css('pron', '.uk')
-        il.add_css('define', '#cald4-1-1+ .dsense_b .ddef_d')
-        print(il.load_item())
+        il.add_css('cat', '.dpos::text')
+        # As Anki2.1 doesn't support HTML5 audio, I have to download the audio file.
+        # get uk pronunciation url
+        src = response.css('.uk .daud source[type="audio/ogg"]::attr(src)').get()
+        url = response.urljoin(src)
+        il.add_value('pron', os.path.basename(url))
+        il.add_value('file_urls', url)
+        il.add_css('define', '.def', take_first, remove_tags)
         return il.load_item()
 
 
-process = CrawlerProcess()
-process.crawl(CamDictSpider)
-process.start()
+if __name__ == '__main__':
+    process = CrawlerProcess()
+    process.crawl(CamDictSpider)
+    process.start()
