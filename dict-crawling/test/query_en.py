@@ -2,7 +2,7 @@
 import hashlib
 import logging
 import os
-from pathlib import PurePath
+from typing import List
 
 import pymongo
 
@@ -15,19 +15,29 @@ from scrapy.utils.python import to_bytes
 from w3lib.html import remove_tags
 
 
-class MongoPipeline:
-    collection_name = 'en_scrapy_items'
+print('__file__={0:<35} | __name__={1:<20} | __package__={2:<20}'.format(__file__, __name__, str(__package__)))
 
-    def __init__(self, mongo_uri, mongo_db):
+
+# Create an instance of class TakeFirst
+take_first = TakeFirst()
+
+
+class MongoPipeline:
+
+    def __init__(self, mongo_uri, mongo_db, mongo_coll):
         self.mongo_uri = mongo_uri
+        self.client = None
         self.mongo_db = mongo_db
+        self.db = None
+        self.mongo_coll = mongo_coll
 
     @classmethod
     def from_crawler(cls, crawler):
         # pull in information from settings.py
         return cls(
             mongo_uri=crawler.settings.get('MONGO_URI'),
-            mongo_db=crawler.settings.get('MONGO_DATABASE')
+            mongo_db=crawler.settings.get('MONGO_DATABASE'),
+            mongo_coll=crawler.settings.get('MONGO_COLLECTION')
         )
 
     def open_spider(self, spider):
@@ -35,6 +45,8 @@ class MongoPipeline:
         # opening db connection
         self.client = pymongo.MongoClient(self.mongo_uri)
         self.db = self.client[self.mongo_db]
+        # deleting all documents in the collection
+        self.db[self.mongo_coll].delete_many({})
 
     def close_spider(self, spider):
         # clean up when spider is closed
@@ -42,7 +54,7 @@ class MongoPipeline:
 
     def process_item(self, item, spider):
         # how to handle each post
-        self.db[self.collection_name].insert(dict(item))
+        self.db[self.mongo_coll].insert(dict(item))
         return item
 
 
@@ -63,12 +75,15 @@ class UKPronPipeline(FilesPipeline):
 
 
 class EnExprItem(scrapy.Item):
-    # query
-    q = scrapy.Field()
-    # url
-    url = scrapy.Field()
-    # expression
+    # query string as _id
+    _id = scrapy.Field(
+        # pymongo.errors.WriteError: can't use an array for _id
+        output_processor=take_first
+    )
+    # expression as _id
     expr = scrapy.Field()
+    # url of query result
+    url = scrapy.Field()
     # category
     cat = scrapy.Field()
     # definition
@@ -104,16 +119,22 @@ class CamDictSpider(scrapy.Spider):
         },
         'FILES_STORE': os.path.dirname(__file__),
         'MONGO_URI': 'mongodb://localhost:27017',
-        'MONGO_DATABASE': 'sivji-sandbox',
+        'MONGO_DATABASE': 'new-expressions',
+        'MONGO_COLLECTION': 'scrapy_cambridge_dict'
     }
 
-    def __init__(self, exprs=None, *args, **kwargs):
+    def __init__(self, exprs: List[str] = [], *args, **kwargs):
+        """
+        :param exprs: string or a list of string
+        :param args:
+        :param kwargs:
+        """
         super(CamDictSpider, self).__init__(*args, **kwargs)
-        if exprs is None:
-            exprs = []
-        self.exprs = exprs
         # TODO this line is used for test, delete it later
-        self.exprs = ['recoil', 'blow OFF', ' spELL', 'selected']
+        exprs = ['recoil', 'blow OFF', ' spELL', 'spell', 'selected', 'selecting']
+        for expr in exprs:
+            self.exprs.append(expr.lower().split())
+
         print(self.exprs)
 
     def start_requests(self):
@@ -126,8 +147,6 @@ class CamDictSpider(scrapy.Spider):
             )
 
     def parse(self, response):
-
-        take_first = TakeFirst()
 
         print(response.url)
 
@@ -155,7 +174,7 @@ class CamDictSpider(scrapy.Spider):
         # il.add_value('q', q)
         # il.add_value('url', m.group('base') + m.group('expr'))
 
-        il.add_value('q', response.meta.get('q'))
+        il.add_value('_id', response.meta.get('q'))
         il.add_value('url', response.url)
         il.add_css('expr', 'span.dhw::text', take_first)
         il.add_css('cat', '.dpos::text', take_first)
