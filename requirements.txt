@@ -11,6 +11,9 @@ mypy
 # PyQt5 is a comprehensive set of Python bindings for Qt v5.
 # (required by Anki’s bundled source code)
 PyQt5
+# ModuleNotFoundError: No module named 'PyQt5.QtWebEngineWidgets'
+# That's because it has been moved to a separated package.
+PyQtWebEngine
 
 # On Windows it will raise error when fetch Anki’s bundled source code:
 # `Running setup.py install for PyAudio ... error`
