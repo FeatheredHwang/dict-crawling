@@ -16,8 +16,7 @@ https://github.com/feathered-hwang/anki-myaddon
 # set up logging to file - see previous section for more details
 import logging
 import os
-import sys
-
+import traceback
 
 # current module's directory
 cur_dir = os.path.dirname(__file__)
@@ -33,6 +32,7 @@ logging.info(cur_dir)
 
 # import test module if exist
 try:
-    from .testing import test
-except ImportError:
-    logging.info("test module doesn't exist.")
+    from .test import test
+except ImportError as e:
+    logging.error("""Something went error when importing test.py: \n{msg}\n{trc}\n"""
+                  .format(msg=str(e), trc=traceback.format_exc()))
