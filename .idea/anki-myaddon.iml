@@ -3,9 +3,9 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
-      <excludeFolder url="file://$MODULE_DIR$/dict-crawling/pymongo" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.8 (dict-crawling)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="module" module-name="dict-crawling" />
   </component>
 </module>

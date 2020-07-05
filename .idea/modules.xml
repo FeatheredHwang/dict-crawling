@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/anki-myaddon.iml" filepath="$PROJECT_DIR$/.idea/anki-myaddon.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../__addons21__/dict-crawling/.idea/dict-crawling.iml" filepath="$PROJECT_DIR$/../__addons21__/dict-crawling/.idea/dict-crawling.iml" />
     </modules>
   </component>
 </project>
