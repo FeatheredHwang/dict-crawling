@@ -26,15 +26,9 @@ GEO2D = "2d"
 """
 
 GEOHAYSTACK = "geoHaystack"
-"""**DEPRECATED** - Index specifier for a 2-dimensional `haystack index`_.
+"""Index specifier for a 2-dimensional `haystack index`_.
 
-**DEPRECATED** - :attr:`GEOHAYSTACK` is deprecated and will be removed in
-PyMongo 4.0. geoHaystack indexes (and the geoSearch command) were deprecated
-in MongoDB 4.4. Instead, create a 2d index and use $geoNear or $geoWithin.
-See https://dochub.mongodb.org/core/4.4-deprecate-geoHaystack.
-
-.. versionchanged:: 3.11
-   Deprecated.
+.. versionadded:: 2.1
 
 .. _haystack index: http://docs.mongodb.org/manual/core/geohaystack/
 """
@@ -70,7 +64,7 @@ SLOW_ONLY = 1
 ALL = 2
 """Profile all operations."""
 
-version_tuple = (3, 11, 0, 'b2.dev0')
+version_tuple = (3, 10, 1)
 
 def get_version_string():
     if isinstance(version_tuple[-1], str):

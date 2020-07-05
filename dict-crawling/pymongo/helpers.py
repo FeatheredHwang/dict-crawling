@@ -50,7 +50,6 @@ _RETRYABLE_ERROR_CODES = _NOT_MASTER_CODES | frozenset([
     6,     # HostUnreachable
     89,    # NetworkTimeout
     9001,  # SocketException
-    262,   # ExceededTimeLimit
 ])
 _UUNDER = u"_"
 
@@ -97,7 +96,8 @@ def _index_document(index_list):
             raise TypeError("first item in each key pair must be a string")
         if not isinstance(value, (string_type, int, abc.Mapping)):
             raise TypeError("second item in each key pair must be 1, -1, "
-                            "'2d', or another valid MongoDB index specifier.")
+                            "'2d', 'geoHaystack', or another valid MongoDB "
+                            "index specifier.")
         index[key] = value
     return index
 
@@ -128,9 +128,7 @@ def _check_command_response(response, msg=None, allowable_errors=None,
                     break
 
         errmsg = details["errmsg"]
-        if (allowable_errors is None
-                or (errmsg not in allowable_errors
-                    and details.get("code") not in allowable_errors)):
+        if allowable_errors is None or errmsg not in allowable_errors:
 
             code = details.get("code")
             # Server is "not master" or "recovering"

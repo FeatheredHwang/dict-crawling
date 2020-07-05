@@ -225,5 +225,8 @@ class Server(object):
             request_id, data = message
             return request_id, data, 0
 
-    def __repr__(self):
-        return '<%s %r>' % (self.__class__.__name__, self._description)
+    def __str__(self):
+        d = self._description
+        return '<Server "%s:%s" %s>' % (
+            d.address[0], d.address[1],
+            SERVER_TYPE._fields[d.server_type])

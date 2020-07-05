@@ -114,8 +114,7 @@ class Cursor(object):
                  modifiers=None, batch_size=0, manipulate=True,
                  collation=None, hint=None, max_scan=None, max_time_ms=None,
                  max=None, min=None, return_key=False, show_record_id=False,
-                 snapshot=False, comment=None, session=None,
-                 allow_disk_use=None):
+                 snapshot=False, comment=None, session=None):
         """Create a new cursor.
 
         Should not be called directly by application developers - see
@@ -160,9 +159,6 @@ class Cursor(object):
             raise TypeError("batch_size must be an integer")
         if batch_size < 0:
             raise ValueError("batch_size must be >= 0")
-        # Only set if allow_disk_use is provided by the user, else None.
-        if allow_disk_use is not None:
-            allow_disk_use = validate_boolean("allow_disk_use", allow_disk_use)
 
         if projection is not None:
             if not projection:
@@ -188,7 +184,6 @@ class Cursor(object):
         self.__collation = validate_collation_or_none(collation)
         self.__return_key = return_key
         self.__show_record_id = show_record_id
-        self.__allow_disk_use = allow_disk_use
         self.__snapshot = snapshot
         self.__set_hint(hint)
 
@@ -225,10 +220,6 @@ class Cursor(object):
             self.__query_flags |= _QUERY_OPTIONS["partial"]
         if oplog_replay:
             self.__query_flags |= _QUERY_OPTIONS["oplog_replay"]
-
-        # The namespace to use for find/getMore commands.
-        self.__dbname = collection.database.name
-        self.__collname = collection.name
 
     @property
     def collection(self):
@@ -285,9 +276,7 @@ class Cursor(object):
                            "max_time_ms", "max_await_time_ms", "comment",
                            "max", "min", "ordering", "explain", "hint",
                            "batch_size", "max_scan", "manipulate",
-                           "query_flags", "modifiers", "collation", "empty",
-                           "show_record_id", "return_key", "allow_disk_use",
-                           "snapshot", "exhaust")
+                           "query_flags", "modifiers", "collation")
         data = dict((k, v) for k, v in iteritems(self.__dict__)
                     if k.startswith('_Cursor__') and k[9:] in values_to_clone)
         if deepcopy:
@@ -435,28 +424,6 @@ class Cursor(object):
             self.__exhaust = False
 
         self.__query_flags &= ~mask
-        return self
-
-    def allow_disk_use(self, allow_disk_use):
-        """Specifies whether MongoDB can use temporary disk files while
-        processing a blocking sort operation.
-
-        Raises :exc:`TypeError` if `allow_disk_use` is not a boolean.
-
-        .. note:: `allow_disk_use` requires server version **>= 4.4**
-
-        :Parameters:
-          - `allow_disk_use`: if True, MongoDB may use temporary
-            disk files to store data exceeding the system memory limit while
-            processing a blocking sort operation.
-
-        .. versionadded:: 3.11
-        """
-        if not isinstance(allow_disk_use, bool):
-            raise TypeError('allow_disk_use must be a bool')
-        self.__check_okay_to_chain()
-
-        self.__allow_disk_use = allow_disk_use
         return self
 
     def limit(self, limit):
@@ -923,7 +890,7 @@ class Cursor(object):
         return self
 
     def where(self, code):
-        """Adds a `$where`_ clause to this query.
+        """Adds a $where clause to this query.
 
         The `code` argument must be an instance of :class:`basestring`
         (:class:`str` in python 3) or :class:`~bson.code.Code`
@@ -931,11 +898,7 @@ class Cursor(object):
         evaluated for each document scanned. Only those documents
         for which the expression evaluates to *true* will be returned
         as results. The keyword *this* refers to the object currently
-        being scanned. For example::
-
-            # Find all documents where field "a" is less than "b" plus "c".
-            for doc in db.test.find().where('this.a < (this.b + this.c)'):
-                print(doc)
+        being scanned.
 
         Raises :class:`TypeError` if `code` is not an instance of
         :class:`basestring` (:class:`str` in python 3). Raises
@@ -943,14 +906,8 @@ class Cursor(object):
         :class:`Cursor` has already been used. Only the last call to
         :meth:`where` applied to a :class:`Cursor` has any effect.
 
-        .. note:: MongoDB 4.4 drops support for :class:`~bson.code.Code`
-          with scope variables. Consider using `$expr`_ instead.
-
         :Parameters:
           - `code`: JavaScript expression to use as a filter
-
-        .. _$expr: https://docs.mongodb.com/manual/reference/operator/query/expr/
-        .. _$where: https://docs.mongodb.com/manual/reference/operator/query/where/
         """
         self.__check_okay_to_chain()
         if not isinstance(code, Code):
@@ -1045,10 +1002,6 @@ class Cursor(object):
                 self.__id = cursor['id']
                 if cmd_name == 'find':
                     documents = cursor['firstBatch']
-                    # Update the namespace used for future getMore commands.
-                    ns = cursor.get('ns')
-                    if ns:
-                        self.__dbname, self.__collname = ns.split('.', 1)
                 else:
                     documents = cursor['nextBatch']
                 self.__data = deque(documents)
@@ -1116,8 +1069,7 @@ class Cursor(object):
                                   self.__read_concern,
                                   self.__collation,
                                   self.__session,
-                                  self.__collection.database.client,
-                                  self.__allow_disk_use)
+                                  self.__collection.database.client)
             self.__send_message(q)
         elif self.__id:  # Get More
             if self.__limit:
@@ -1128,8 +1080,8 @@ class Cursor(object):
                 limit = self.__batch_size
 
             # Exhaust cursors don't send getMore messages.
-            g = self._getmore_class(self.__dbname,
-                                    self.__collname,
+            g = self._getmore_class(self.__collection.database.name,
+                                    self.__collection.name,
                                     limit,
                                     self.__id,
                                     self.__codec_options,

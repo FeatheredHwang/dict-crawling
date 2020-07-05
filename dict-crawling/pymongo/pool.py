@@ -21,11 +21,21 @@ import sys
 import threading
 import collections
 
+try:
+    import ssl
+    from ssl import SSLError
+    _HAVE_SNI = getattr(ssl, 'HAS_SNI', False)
+except ImportError:
+    _HAVE_SNI = False
+    class SSLError(socket.error):
+        pass
 
-from pymongo.ssl_support import (
-    SSLError as _SSLError,
-    HAS_SNI as _HAVE_SNI,
-    IPADDR_SAFE as _IPADDR_SAFE)
+try:
+    from ssl import CertificateError as _SSLCertificateError
+except ImportError:
+    class _SSLCertificateError(ValueError):
+        pass
+
 
 from bson import DEFAULT_CODEC_OPTIONS
 from bson.py3compat import imap, itervalues, _unicode, integer_types
@@ -42,7 +52,6 @@ from pymongo.common import (MAX_BSON_SIZE,
                             ORDERED_TYPES,
                             WAIT_QUEUE_TIMEOUT)
 from pymongo.errors import (AutoReconnect,
-                            CertificateError,
                             ConnectionFailure,
                             ConfigurationError,
                             InvalidOperation,
@@ -56,12 +65,12 @@ from pymongo.monotonic import time as _time
 from pymongo.monitoring import (ConnectionCheckOutFailedReason,
                                 ConnectionClosedReason)
 from pymongo.network import (command,
-                             receive_message)
+                             receive_message,
+                             SocketChecker)
 from pymongo.read_preferences import ReadPreference
 from pymongo.server_type import SERVER_TYPE
-from pymongo.socket_checker import SocketChecker
 # Always use our backport so we always have support for IP address matching
-from pymongo.ssl_match_hostname import match_hostname
+from pymongo.ssl_match_hostname import match_hostname, CertificateError
 
 # For SNI support. According to RFC6066, section 3, IPv4 and IPv6 literals are
 # not permitted for SNI hostname.
@@ -270,7 +279,7 @@ def _raise_connection_failure(address, error, msg_prefix=None):
         msg = msg_prefix + msg
     if isinstance(error, socket.timeout):
         raise NetworkTimeout(msg)
-    elif isinstance(error, _SSLError) and 'timed out' in str(error):
+    elif isinstance(error, SSLError) and 'timed out' in str(error):
         # CPython 2.7 and PyPy 2.x do not distinguish network
         # timeouts from other SSLErrors (https://bugs.python.org/issue10272).
         # Luckily, we can work around this limitation because the phrase
@@ -458,25 +467,6 @@ class PoolOptions(object):
         return self.__metadata.copy()
 
 
-def _negotiate_creds(all_credentials):
-    """Return one credential that needs mechanism negotiation, if any.
-    """
-    if all_credentials:
-        for creds in all_credentials.values():
-            if creds.mechanism == 'DEFAULT' and creds.username:
-                return creds
-    return None
-
-
-def _speculative_context(all_credentials):
-    """Return the _AuthContext to use for speculative auth, if any.
-    """
-    if all_credentials and len(all_credentials) == 1:
-        creds = next(itervalues(all_credentials))
-        return auth._AuthContext.from_credentials(creds)
-    return None
-
-
 class SocketInfo(object):
     """Store a socket with some metadata.
 
@@ -506,18 +496,13 @@ class SocketInfo(object):
         self.enabled_for_cmap = pool.enabled_for_cmap
         self.compression_settings = pool.opts.compression_settings
         self.compression_context = None
-        self.socket_checker = SocketChecker()
-        # Support for mechanism negotiation on the initial handshake.
-        # Maps credential to saslSupportedMechs.
-        self.negotiated_mechanisms = {}
-        self.auth_ctx = {}
 
-        # The pool's generation changes with each reset() so we can close
-        # sockets created before the last reset.
-        self.generation = pool.generation
+        # The pool's pool_id changes with each reset() so we can close sockets
+        # created before the last reset.
+        self.pool_id = pool.pool_id
         self.ready = False
 
-    def ismaster(self, metadata, cluster_time, all_credentials=None):
+    def ismaster(self, metadata, cluster_time):
         cmd = SON([('ismaster', 1)])
         if not self.performed_handshake:
             cmd['client'] = metadata
@@ -526,15 +511,6 @@ class SocketInfo(object):
 
         if self.max_wire_version >= 6 and cluster_time is not None:
             cmd['$clusterTime'] = cluster_time
-
-        # XXX: Simplify in PyMongo 4.0 when all_credentials is always a single
-        # unchangeable value per MongoClient.
-        creds = _negotiate_creds(all_credentials)
-        if creds:
-            cmd['saslSupportedMechs'] = creds.source + '.' + creds.username
-        auth_ctx = _speculative_context(all_credentials)
-        if auth_ctx:
-            cmd['speculativeAuthenticate'] = auth_ctx.speculate_command()
 
         ismaster = IsMaster(self.command('admin', cmd, publish_events=False))
         self.is_writable = ismaster.is_writable
@@ -552,12 +528,6 @@ class SocketInfo(object):
 
         self.performed_handshake = True
         self.op_msg_enabled = ismaster.max_wire_version >= 6
-        if creds:
-            self.negotiated_mechanisms[creds] = ismaster.sasl_supported_mechs
-        if auth_ctx:
-            auth_ctx.parse_response(ismaster)
-            if auth_ctx.speculate_succeeded():
-                self.auth_ctx[auth_ctx.credentials] = auth_ctx
         return ismaster
 
     def command(self, dbname, spec, slave_ok=False,
@@ -739,7 +709,8 @@ class SocketInfo(object):
                 self.authset.discard(credentials)
 
             for credentials in cached - authset:
-                self.authenticate(credentials)
+                auth.authenticate(credentials, self)
+                self.authset.add(credentials)
 
         # CMAP spec says to publish the ready event only after authenticating
         # the connection.
@@ -758,9 +729,6 @@ class SocketInfo(object):
         """
         auth.authenticate(credentials, self)
         self.authset.add(credentials)
-        # negotiated_mechanisms are no longer needed.
-        self.negotiated_mechanisms.pop(credentials, None)
-        self.auth_ctx.pop(credentials, None)
 
     def validate_session(self, client, session):
         """Validate this session before use with client.
@@ -793,10 +761,6 @@ class SocketInfo(object):
             self.listeners.publish_connection_closed(
                 self.address, self.id, reason)
 
-    def socket_closed(self):
-        """Return True if we know socket has been closed, False otherwise."""
-        return self.socket_checker.socket_closed(self.sock)
-
     def send_cluster_time(self, command, session, client):
         """Add cluster time for MongoDB >= 3.6."""
         if self.max_wire_version >= 6 and client:
@@ -827,8 +791,7 @@ class SocketInfo(object):
         # KeyboardInterrupt from the start, rather than as an initial
         # socket.error, so we catch that, close the socket, and reraise it.
         self.close_socket(ConnectionClosedReason.ERROR)
-        # SSLError from PyOpenSSL inherits directly from Exception.
-        if isinstance(error, (IOError, OSError, _SSLError)):
+        if isinstance(error, socket.error):
             _raise_connection_failure(self.address, error)
         else:
             raise
@@ -919,6 +882,9 @@ def _create_connection(address, options):
         raise socket.error('getaddrinfo failed')
 
 
+_PY37PLUS = sys.version_info[:2] >= (3, 7)
+
+
 def _configured_socket(address, options):
     """Given (host, port) and PoolOptions, return a configured socket.
 
@@ -939,11 +905,11 @@ def _configured_socket(address, options):
             # https://bugs.python.org/issue32185
             # We have to pass hostname / ip address to wrap_socket
             # to use SSLContext.check_hostname.
-            if _HAVE_SNI and (not is_ip_address(host) or _IPADDR_SAFE):
+            if _HAVE_SNI and (not is_ip_address(host) or _PY37PLUS):
                 sock = ssl_context.wrap_socket(sock, server_hostname=host)
             else:
                 sock = ssl_context.wrap_socket(sock)
-        except CertificateError:
+        except _SSLCertificateError:
             sock.close()
             # Raise CertificateError directly like we do after match_hostname
             # below.
@@ -1001,7 +967,7 @@ class Pool:
 
         # Keep track of resets, so we notice sockets created before the most
         # recent reset and close them.
-        self.generation = 0
+        self.pool_id = 0
         self.pid = os.getpid()
         self.address = address
         self.opts = options
@@ -1021,6 +987,7 @@ class Pool:
 
         self._socket_semaphore = thread_util.create_semaphore(
             self.opts.max_pool_size, max_waiters)
+        self.socket_checker = SocketChecker()
         if self.enabled_for_cmap:
             self.opts.event_listeners.publish_pool_created(
                 self.address, self.opts.non_default_options)
@@ -1029,7 +996,7 @@ class Pool:
         with self.lock:
             if self.closed:
                 return
-            self.generation += 1
+            self.pool_id += 1
             self.pid = os.getpid()
             sockets, self.sockets = self.sockets, collections.deque()
             self.active_sockets = 0
@@ -1066,10 +1033,10 @@ class Pool:
     def close(self):
         self._reset(close=True)
 
-    def remove_stale_sockets(self, reference_generation, all_credentials):
+    def remove_stale_sockets(self, reference_pool_id):
         """Removes stale sockets then adds new ones if pool is too small and
-        has not been reset. The `reference_generation` argument specifies the
-        `generation` at the point in time this operation was requested on the
+        has not been reset. The `reference_pool_id` argument specifies the
+        `pool_id` at the point in time this operation was requested on the
         pool.
         """
         if self.opts.max_idle_time_seconds is not None:
@@ -1090,18 +1057,18 @@ class Pool:
             if not self._socket_semaphore.acquire(False):
                 break
             try:
-                sock_info = self.connect(all_credentials)
+                sock_info = self.connect()
                 with self.lock:
                     # Close connection and return if the pool was reset during
                     # socket creation or while acquiring the pool lock.
-                    if self.generation != reference_generation:
+                    if self.pool_id != reference_pool_id:
                         sock_info.close_socket(ConnectionClosedReason.STALE)
                         break
                     self.sockets.appendleft(sock_info)
             finally:
                 self._socket_semaphore.release()
 
-    def connect(self, all_credentials=None):
+    def connect(self):
         """Connect to Mongo and return a new SocketInfo.
 
         Can raise ConnectionFailure or CertificateError.
@@ -1121,6 +1088,9 @@ class Pool:
         try:
             sock = _configured_socket(self.address, self.opts)
         except socket.error as error:
+            if sock is not None:
+                sock.close()
+
             if self.enabled_for_cmap:
                 listeners.publish_connection_closed(
                     self.address, conn_id, ConnectionClosedReason.ERROR)
@@ -1129,7 +1099,7 @@ class Pool:
 
         sock_info = SocketInfo(sock, self, self.address, conn_id)
         if self.handshake:
-            sock_info.ismaster(self.opts.metadata, None, all_credentials)
+            sock_info.ismaster(self.opts.metadata, None)
             self.is_writable = sock_info.is_writable
 
         return sock_info
@@ -1160,23 +1130,29 @@ class Pool:
         listeners = self.opts.event_listeners
         if self.enabled_for_cmap:
             listeners.publish_connection_check_out_started(self.address)
-
-        sock_info = self._get_socket(all_credentials)
-
-        if self.enabled_for_cmap:
-            listeners.publish_connection_checked_out(
-                self.address, sock_info.id)
+        # First get a socket, then attempt authentication. Simplifies
+        # semaphore management in the face of network errors during auth.
+        sock_info = self._get_socket_no_auth()
+        checked_auth = False
         try:
+            sock_info.check_auth(all_credentials)
+            checked_auth = True
+            if self.enabled_for_cmap:
+                listeners.publish_connection_checked_out(
+                    self.address, sock_info.id)
             yield sock_info
         except:
             # Exception in caller. Decrement semaphore.
-            self.return_socket(sock_info)
+            self.return_socket(sock_info, publish_checkin=checked_auth)
+            if self.enabled_for_cmap and not checked_auth:
+                self.opts.event_listeners.publish_connection_check_out_failed(
+                    self.address, ConnectionCheckOutFailedReason.CONN_ERROR)
             raise
         else:
             if not checkout:
                 self.return_socket(sock_info)
 
-    def _get_socket(self, all_credentials):
+    def _get_socket_no_auth(self):
         """Get or create a SocketInfo. Can raise ConnectionFailure."""
         # We use the pid here to avoid issues with fork / multiprocessing.
         # See test.test_client:TestClient.test_fork for an example of
@@ -1208,11 +1184,10 @@ class Pool:
                         sock_info = self.sockets.popleft()
                 except IndexError:
                     # Can raise ConnectionFailure or CertificateError.
-                    sock_info = self.connect(all_credentials)
+                    sock_info = self.connect()
                 else:
                     if self._perished(sock_info):
                         sock_info = None
-            sock_info.check_auth(all_credentials)
         except Exception:
             self._socket_semaphore.release()
             with self.lock:
@@ -1225,41 +1200,38 @@ class Pool:
 
         return sock_info
 
-    def return_socket(self, sock_info):
+    def return_socket(self, sock_info, publish_checkin=True):
         """Return the socket to the pool, or if it's closed discard it.
 
         :Parameters:
           - `sock_info`: The socket to check into the pool.
+          - `publish_checkin`: If False, a ConnectionCheckedInEvent will not
+            be published.
         """
         listeners = self.opts.event_listeners
-        if self.enabled_for_cmap:
+        if self.enabled_for_cmap and publish_checkin:
             listeners.publish_connection_checked_in(self.address, sock_info.id)
         if self.pid != os.getpid():
             self.reset()
         else:
             if self.closed:
                 sock_info.close_socket(ConnectionClosedReason.POOL_CLOSED)
+            elif sock_info.pool_id != self.pool_id:
+                sock_info.close_socket(ConnectionClosedReason.STALE)
             elif not sock_info.closed:
+                sock_info.update_last_checkin_time()
+                sock_info.update_is_writable(self.is_writable)
                 with self.lock:
-                    # Hold the lock to ensure this section does not race with
-                    # Pool.reset().
-                    if sock_info.generation != self.generation:
-                        sock_info.close_socket(ConnectionClosedReason.STALE)
-                    else:
-                        sock_info.update_last_checkin_time()
-                        sock_info.update_is_writable(self.is_writable)
-                        self.sockets.appendleft(sock_info)
+                    self.sockets.appendleft(sock_info)
 
         self._socket_semaphore.release()
         with self.lock:
             self.active_sockets -= 1
 
     def _perished(self, sock_info):
-        """Return True and close the connection if it is "perished".
-
-        This side-effecty function checks if this socket has been idle for
+        """This side-effecty function checks if this socket has been idle for
         for longer than the max idle time, or if the socket has been closed by
-        some external network error, or if the socket's generation is outdated.
+        some external network error.
 
         Checking sockets lets us avoid seeing *some*
         :class:`~pymongo.errors.AutoReconnect` exceptions on server
@@ -1278,13 +1250,9 @@ class Pool:
         if (self._check_interval_seconds is not None and (
                 0 == self._check_interval_seconds or
                 idle_time_seconds > self._check_interval_seconds)):
-            if sock_info.socket_closed():
+            if self.socket_checker.socket_closed(sock_info.sock):
                 sock_info.close_socket(ConnectionClosedReason.ERROR)
                 return True
-
-        if sock_info.generation != self.generation:
-            sock_info.close_socket(ConnectionClosedReason.STALE)
-            return True
 
         return False
 

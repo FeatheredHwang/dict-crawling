@@ -19,14 +19,10 @@ import sys
 from bson.errors import *
 
 try:
-    # CPython 3.7+
-    from ssl import SSLCertVerificationError as CertificateError
+    from ssl import CertificateError
 except ImportError:
-    try:
-        from ssl import CertificateError
-    except ImportError:
-        class CertificateError(ValueError):
-            pass
+    from pymongo.ssl_match_hostname import CertificateError
+
 
 class PyMongoError(Exception):
     """Base class for all PyMongo exceptions."""
@@ -48,7 +44,7 @@ class PyMongoError(Exception):
 
     def _remove_error_label(self, label):
         """Remove the given label from this error."""
-        self._error_labels.discard(label)
+        self._error_labels.remove(label)
 
     if sys.version_info[0] == 2:
         def __str__(self):
@@ -68,6 +64,12 @@ class ProtocolError(PyMongoError):
 
 class ConnectionFailure(PyMongoError):
     """Raised when a connection to the database cannot be made or is lost."""
+    def __init__(self, message='', error_labels=None):
+        if error_labels is None:
+            # Connection errors are transient errors by default.
+            error_labels = ("TransientTransactionError",)
+        super(ConnectionFailure, self).__init__(
+            message, error_labels=error_labels)
 
 
 class AutoReconnect(ConnectionFailure):
@@ -83,10 +85,7 @@ class AutoReconnect(ConnectionFailure):
     Subclass of :exc:`~pymongo.errors.ConnectionFailure`.
     """
     def __init__(self, message='', errors=None):
-        error_labels = None
-        if errors is not None and isinstance(errors, dict):
-            error_labels = errors.get('errorLabels')
-        super(AutoReconnect, self).__init__(message, error_labels)
+        super(AutoReconnect, self).__init__(message)
         self.errors = self.details = errors or []
 
 

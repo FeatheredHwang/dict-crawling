@@ -15,7 +15,6 @@
 """Represent MongoClient's configuration."""
 
 import threading
-import traceback
 
 from bson.objectid import ObjectId
 from pymongo import common, monitor, pool
@@ -38,8 +37,7 @@ class TopologySettings(object):
                  server_selection_timeout=SERVER_SELECTION_TIMEOUT,
                  heartbeat_frequency=common.HEARTBEAT_FREQUENCY,
                  server_selector=None,
-                 fqdn=None,
-                 direct_connection=None):
+                 fqdn=None):
         """Represent MongoClient's configuration.
 
         Take a list of (host, port) pairs and optional replica set name.
@@ -60,16 +58,8 @@ class TopologySettings(object):
         self._server_selector = server_selector
         self._fqdn = fqdn
         self._heartbeat_frequency = heartbeat_frequency
-
-        if direct_connection is None:
-            self._direct = (len(self._seeds) == 1 and not self.replica_set_name)
-        else:
-            self._direct = direct_connection
-
+        self._direct = (len(self._seeds) == 1 and not replica_set_name)
         self._topology_id = ObjectId()
-        # Store the allocation traceback to catch unclosed clients in the
-        # test suite.
-        self._stack = ''.join(traceback.format_stack())
 
     @property
     def seeds(self):

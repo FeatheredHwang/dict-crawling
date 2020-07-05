@@ -65,13 +65,10 @@ transaction automatically calls :meth:`ClientSession.commit_transaction`.
 If the block exits with an exception, the transaction automatically calls
 :meth:`ClientSession.abort_transaction`.
 
-In general, multi-document transactions only support read/write (CRUD)
-operations on existing collections. However, MongoDB 4.4 adds support for
-creating collections and indexes with some limitations, including an
+For multi-document transactions, you can only specify read/write (CRUD)
+operations on existing collections. For example, a multi-document transaction
+cannot include a create or drop collection/index operations, including an
 insert operation that would result in the creation of a new collection.
-For a complete description of all the supported and unsupported operations
-see the `MongoDB server's documentation for transactions
-<http://dochub.mongodb.org/core/transactions>`_.
 
 A session may only have a single active transaction at a time, multiple
 transactions on the same session can be executed in sequence.
@@ -98,11 +95,13 @@ Classes
 """
 
 import collections
+import os
+import sys
 import uuid
 
 from bson.binary import Binary
 from bson.int64 import Int64
-from bson.py3compat import abc, integer_types
+from bson.py3compat import abc, integer_types, reraise_instance
 from bson.son import SON
 from bson.timestamp import Timestamp
 
@@ -112,6 +111,7 @@ from pymongo.errors import (ConfigurationError,
                             InvalidOperation,
                             OperationFailure,
                             PyMongoError,
+                            ServerSelectionTimeoutError,
                             WTimeoutError)
 from pymongo.helpers import _RETRYABLE_ERROR_CODES
 from pymongo.read_concern import ReadConcern
@@ -292,7 +292,6 @@ class _Transaction(object):
         self.sharded = False
         self.pinned_address = None
         self.recovery_token = None
-        self.attempt = 0
 
     def active(self):
         return self.state in (_TxnState.STARTING, _TxnState.IN_PROGRESS)
@@ -302,13 +301,12 @@ class _Transaction(object):
         self.sharded = False
         self.pinned_address = None
         self.recovery_token = None
-        self.attempt = 0
 
 
 def _reraise_with_unknown_commit(exc):
     """Re-raise an exception with the UnknownTransactionCommitResult label."""
     exc._add_error_label("UnknownTransactionCommitResult")
-    raise
+    reraise_instance(exc, trace=sys.exc_info()[2])
 
 
 def _max_time_expired_error(exc):
@@ -578,6 +576,7 @@ class ClientSession(object):
         .. versionadded:: 3.7
         """
         self._check_ended()
+        retry = False
         state = self._transaction.state
         if state is _TxnState.NONE:
             raise InvalidOperation("No transaction started")
@@ -592,9 +591,10 @@ class ClientSession(object):
             # We're explicitly retrying the commit, move the state back to
             # "in progress" so that in_transaction returns true.
             self._transaction.state = _TxnState.IN_PROGRESS
+            retry = True
 
         try:
-            self._finish_transaction_with_retry("commitTransaction")
+            self._finish_transaction_with_retry("commitTransaction", retry)
         except ConnectionFailure as exc:
             # We do not know if the commit was successfully applied on the
             # server or if it satisfied the provided write concern, set the
@@ -637,25 +637,44 @@ class ClientSession(object):
                 "Cannot call abortTransaction after calling commitTransaction")
 
         try:
-            self._finish_transaction_with_retry("abortTransaction")
+            self._finish_transaction_with_retry("abortTransaction", False)
         except (OperationFailure, ConnectionFailure):
             # The transactions spec says to ignore abortTransaction errors.
             pass
         finally:
             self._transaction.state = _TxnState.ABORTED
 
-    def _finish_transaction_with_retry(self, command_name):
+    def _finish_transaction_with_retry(self, command_name, explict_retry):
         """Run commit or abort with one retry after any retryable error.
 
         :Parameters:
           - `command_name`: Either "commitTransaction" or "abortTransaction".
+          - `explict_retry`: True when this is an explict commit retry attempt,
+            ie the application called session.commit_transaction() twice.
         """
-        def func(session, sock_info, retryable):
-            return self._finish_transaction(sock_info, command_name)
-        return self._client._retry_internal(True, func, self, None)
+        # This can be refactored with MongoClient._retry_with_session.
+        try:
+            return self._finish_transaction(command_name, explict_retry)
+        except ServerSelectionTimeoutError:
+            raise
+        except ConnectionFailure as exc:
+            try:
+                return self._finish_transaction(command_name, True)
+            except ServerSelectionTimeoutError:
+                # Raise the original error so the application can infer that
+                # an attempt was made.
+                raise exc
+        except OperationFailure as exc:
+            if exc.code not in _RETRYABLE_ERROR_CODES:
+                raise
+            try:
+                return self._finish_transaction(command_name, True)
+            except ServerSelectionTimeoutError:
+                # Raise the original error so the application can infer that
+                # an attempt was made.
+                raise exc
 
-    def _finish_transaction(self, sock_info, command_name):
-        self._transaction.attempt += 1
+    def _finish_transaction(self, command_name, retrying):
         opts = self._transaction.opts
         wc = opts.write_concern
         cmd = SON([(command_name, 1)])
@@ -666,7 +685,7 @@ class ClientSession(object):
             # Transaction spec says that after the initial commit attempt,
             # subsequent commitTransaction commands should be upgraded to use
             # w:"majority" and set a default value of 10 seconds for wtimeout.
-            if self._transaction.attempt > 1:
+            if retrying:
                 wc_doc = wc.document
                 wc_doc["w"] = "majority"
                 wc_doc.setdefault("wtimeout", 10000)
@@ -675,12 +694,13 @@ class ClientSession(object):
         if self._transaction.recovery_token:
             cmd['recoveryToken'] = self._transaction.recovery_token
 
-        return self._client.admin._command(
-            sock_info,
-            cmd,
-            session=self,
-            write_concern=wc,
-            parse_write_concern_error=True)
+        with self._client._socket_for_writes(self) as sock_info:
+            return self._client.admin._command(
+                sock_info,
+                cmd,
+                session=self,
+                write_concern=wc,
+                parse_write_concern_error=True)
 
     def _advance_cluster_time(self, cluster_time):
         """Internal cluster time helper."""
@@ -815,13 +835,13 @@ class ClientSession(object):
 
 
 class _ServerSession(object):
-    def __init__(self, generation):
+    def __init__(self, pool_id):
         # Ensure id is type 4, regardless of CodecOptions.uuid_representation.
         self.session_id = {'id': Binary(uuid.uuid4().bytes, 4)}
         self.last_use = monotonic.time()
         self._transaction_id = 0
         self.dirty = False
-        self.generation = generation
+        self.pool_id = pool_id
 
     def mark_dirty(self):
         """Mark this session as dirty.
@@ -853,10 +873,10 @@ class _ServerSessionPool(collections.deque):
     """
     def __init__(self, *args, **kwargs):
         super(_ServerSessionPool, self).__init__(*args, **kwargs)
-        self.generation = 0
+        self.pool_id = 0
 
     def reset(self):
-        self.generation += 1
+        self.pool_id += 1
         self.clear()
 
     def pop_all(self):
@@ -879,7 +899,7 @@ class _ServerSessionPool(collections.deque):
             if not s.timed_out(session_timeout_minutes):
                 return s
 
-        return _ServerSession(self.generation)
+        return _ServerSession(self.pool_id)
 
     def return_server_session(self, server_session, session_timeout_minutes):
         self._clear_stale(session_timeout_minutes)
@@ -889,8 +909,7 @@ class _ServerSessionPool(collections.deque):
     def return_server_session_no_lock(self, server_session):
         # Discard sessions from an old pool to avoid duplicate sessions in the
         # child process after a fork.
-        if (server_session.generation == self.generation and
-                not server_session.dirty):
+        if server_session.pool_id == self.pool_id and not server_session.dirty:
             self.appendleft(server_session)
 
     def _clear_stale(self, session_timeout_minutes):

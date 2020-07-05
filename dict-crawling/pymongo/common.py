@@ -19,9 +19,10 @@ import datetime
 import warnings
 
 from bson import SON
-from bson.binary import UuidRepresentation
+from bson.binary import (STANDARD, PYTHON_LEGACY,
+                         JAVA_LEGACY, CSHARP_LEGACY)
 from bson.codec_options import CodecOptions, TypeRegistry
-from bson.py3compat import abc, integer_types, iteritems, string_type, PY3
+from bson.py3compat import abc, integer_types, iteritems, string_type
 from bson.raw_bson import RawBSONDocument
 from pymongo.auth import MECHANISMS
 from pymongo.compression_support import (validate_compressors,
@@ -42,10 +43,6 @@ try:
 except ImportError:
     ORDERED_TYPES = (SON,)
 
-if PY3:
-    from urllib.parse import unquote_plus
-else:
-    from urllib import unquote_plus
 
 # Defaults until we connect to a server and get updated limits.
 MAX_BSON_SIZE = 16 * (1024 ** 2)
@@ -57,7 +54,7 @@ MAX_WRITE_BATCH_SIZE = 1000
 # What this version of PyMongo supports.
 MIN_SUPPORTED_SERVER_VERSION = "2.6"
 MIN_SUPPORTED_WIRE_VERSION = 2
-MAX_SUPPORTED_WIRE_VERSION = 9
+MAX_SUPPORTED_WIRE_VERSION = 8
 
 # Frequency to call ismaster on servers, in seconds.
 HEARTBEAT_FREQUENCY = 10
@@ -148,11 +145,10 @@ def raise_config_error(key, dummy):
 
 # Mapping of URI uuid representation options to valid subtypes.
 _UUID_REPRESENTATIONS = {
-    'unspecified': UuidRepresentation.UNSPECIFIED,
-    'standard': UuidRepresentation.STANDARD,
-    'pythonLegacy': UuidRepresentation.PYTHON_LEGACY,
-    'javaLegacy': UuidRepresentation.JAVA_LEGACY,
-    'csharpLegacy': UuidRepresentation.CSHARP_LEGACY
+    'standard': STANDARD,
+    'pythonLegacy': PYTHON_LEGACY,
+    'javaLegacy': JAVA_LEGACY,
+    'csharpLegacy': CSHARP_LEGACY
 }
 
 
@@ -395,11 +391,8 @@ def validate_read_preference_tags(name, value):
             tag_sets.append({})
             continue
         try:
-            tags = {}
-            for tag in tag_set.split(","):
-                key, val = tag.split(":")
-                tags[unquote_plus(key)] = unquote_plus(val)
-            tag_sets.append(tags)
+            tag_sets.append(dict([tag.split(":")
+                                  for tag in tag_set.split(",")]))
         except Exception:
             raise ValueError("%r not a valid "
                              "value for %s" % (tag_set, name))
@@ -408,8 +401,7 @@ def validate_read_preference_tags(name, value):
 
 _MECHANISM_PROPS = frozenset(['SERVICE_NAME',
                               'CANONICALIZE_HOST_NAME',
-                              'SERVICE_REALM',
-                              'AWS_SESSION_TOKEN'])
+                              'SERVICE_REALM'])
 
 
 def validate_auth_mechanism_properties(option, value):
@@ -420,10 +412,6 @@ def validate_auth_mechanism_properties(option, value):
         try:
             key, val = opt.split(':')
         except ValueError:
-            # Try not to leak the token.
-            if 'AWS_SESSION_TOKEN' in opt:
-                opt = ('AWS_SESSION_TOKEN:<redacted token>, did you forget '
-                       'to percent-escape the token with quote_plus?')
             raise ValueError("auth mechanism properties must be "
                              "key:value pairs like SERVICE_NAME:"
                              "mongodb, not %s." % (opt,))
@@ -434,7 +422,7 @@ def validate_auth_mechanism_properties(option, value):
         if key == 'CANONICALIZE_HOST_NAME':
             props[key] = validate_boolean_or_string(key, val)
         else:
-            props[key] = unquote_plus(val)
+            props[key] = val
 
     return props
 
@@ -594,7 +582,6 @@ URI_OPTIONS_VALIDATOR_MAP = {
     'authsource': validate_string,
     'compressors': validate_compressors,
     'connecttimeoutms': validate_timeout_or_none,
-    'directconnection': validate_boolean_or_string,
     'heartbeatfrequencyms': validate_timeout_or_none,
     'journal': validate_boolean_or_string,
     'localthresholdms': validate_positive_float_or_zero,
@@ -618,7 +605,6 @@ URI_OPTIONS_VALIDATOR_MAP = {
     'tlscafile': validate_readable,
     'tlscertificatekeyfile': validate_readable,
     'tlscertificatekeyfilepassword': validate_string_or_none,
-    'tlsdisableocspendpointcheck': validate_boolean_or_string,
     'tlsinsecure': validate_boolean_or_string,
     'w': validate_non_negative_int_or_basestring,
     'wtimeoutms': validate_non_negative_integer,
@@ -670,7 +656,6 @@ INTERNAL_URI_OPTION_NAME_MAP = {
     'tlscafile': 'ssl_ca_certs',
     'tlscertificatekeyfile': 'ssl_certfile',
     'tlscertificatekeyfilepassword': 'ssl_pem_passphrase',
-    'tlsdisableocspendpointcheck': 'ssl_check_ocsp_endpoint',
 }
 
 # Map from deprecated URI option names to a tuple indicating the method of
@@ -729,7 +714,7 @@ def validate_auth_option(option, value):
     if lower not in _AUTH_OPTIONS:
         raise ConfigurationError('Unknown '
                                  'authentication option: %s' % (option,))
-    return option, value
+    return lower, value
 
 
 def validate(option, value):
@@ -738,7 +723,7 @@ def validate(option, value):
     lower = option.lower()
     validator = VALIDATORS.get(lower, raise_config_error)
     value = validator(option, value)
-    return option, value
+    return lower, value
 
 
 def get_validated_options(options, warn=True):

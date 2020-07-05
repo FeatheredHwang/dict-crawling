@@ -59,6 +59,7 @@ from pymongo.errors import (AutoReconnect,
                             ConfigurationError,
                             ConnectionFailure,
                             InvalidOperation,
+                            NetworkTimeout,
                             NotMasterError,
                             OperationFailure,
                             PyMongoError,
@@ -67,8 +68,7 @@ from pymongo.read_preferences import ReadPreference
 from pymongo.server_selectors import (writable_preferred_server_selector,
                                       writable_server_selector)
 from pymongo.server_type import SERVER_TYPE
-from pymongo.topology import (Topology,
-                              _ErrorContext)
+from pymongo.topology import Topology
 from pymongo.topology_description import TOPOLOGY_TYPE
 from pymongo.settings import TopologySettings
 from pymongo.uri_parser import (_handle_option_deprecations,
@@ -205,12 +205,6 @@ class MongoClient(common.BaseObject):
           - `connect` (optional): if ``True`` (the default), immediately
             begin connecting to MongoDB in the background. Otherwise connect
             on the first operation.
-          - `directConnection` (optional): if ``True``, forces this client to
-             connect directly to the specified MongoDB host as a standalone.
-             If ``false``, the client connects to the entire replica set of
-             which the given MongoDB host(s) is a part. If this is ``True``
-             and a mongodb+srv:// URI or a URI containing multiple seeds is
-             provided, an exception will be raised.
 
           | **Other optional parameters can be passed as keyword arguments:**
 
@@ -417,9 +411,7 @@ class MongoClient(common.BaseObject):
           - `authMechanismProperties`: Used to specify authentication mechanism
             specific options. To specify the service name for GSSAPI
             authentication pass authMechanismProperties='SERVICE_NAME:<service
-            name>'.
-            To specify the session token for MONGODB-AWS authentication pass
-            ``authMechanismProperties='AWS_SESSION_TOKEN:<session token>'``.
+            name>'
 
           .. seealso:: :doc:`/examples/authentication`
 
@@ -465,9 +457,6 @@ class MongoClient(common.BaseObject):
             ``ssl_keyfile``. Only necessary if the private key is encrypted.
             Only supported by python 2.7.9+ (pypy 2.5.1+) and 3.3+. Defaults
             to ``None``.
-          - `tlsDisableOCSPEndpointCheck`: (boolean) If ``True``, disables
-            certificate revocation status checking via the OCSP responder
-            specified on the server certificate. Defaults to ``False``.
           - `ssl`: (boolean) Alias for ``tls``.
           - `ssl_certfile`: The certificate file used to identify the local
             connection against mongod. Implies ``tls=True``. Defaults to
@@ -496,12 +485,6 @@ class MongoClient(common.BaseObject):
             :ref:`automatic-client-side-encryption` for an example.
 
         .. mongodoc:: connections
-
-        .. versionchanged:: 3.11
-           Added the following keyword arguments and URI options:
-
-             - ``tlsDisableOCSPEndpointCheck``
-             - ``directConnection``
 
         .. versionchanged:: 3.9
            Added the ``retryReads`` keyword argument and URI option.
@@ -537,7 +520,7 @@ class MongoClient(common.BaseObject):
 
         .. versionchanged:: 3.5
            Add ``username`` and ``password`` options. Document the
-           ``authSource``, ``authMechanism``, and ``authMechanismProperties``
+           ``authSource``, ``authMechanism``, and ``authMechanismProperties ``
            options.
            Deprecated the ``socketKeepAlive`` keyword argument and URI option.
            ``socketKeepAlive`` now defaults to ``True``.
@@ -660,8 +643,8 @@ class MongoClient(common.BaseObject):
         # Handle deprecated options in kwarg options.
         keyword_opts = _handle_option_deprecations(keyword_opts)
         # Validate kwarg options.
-        keyword_opts = common._CaseInsensitiveDictionary(dict(common.validate(
-            keyword_opts.cased_key(k), v) for k, v in keyword_opts.items()))
+        keyword_opts = common._CaseInsensitiveDictionary(
+            dict(common.validate(k, v) for k, v in keyword_opts.items()))
 
         # Override connection string options with kwarg options.
         opts.update(keyword_opts)
@@ -715,10 +698,11 @@ class MongoClient(common.BaseObject):
             server_selection_timeout=options.server_selection_timeout,
             server_selector=options.server_selector,
             heartbeat_frequency=options.heartbeat_frequency,
-            fqdn=fqdn,
-            direct_connection=options.direct_connection)
+            fqdn=fqdn)
 
         self._topology = Topology(self._topology_settings)
+        if connect:
+            self._topology.open()
 
         def target():
             client = self_ref()
@@ -737,9 +721,7 @@ class MongoClient(common.BaseObject):
         # this closure. When the client is freed, stop the executor soon.
         self_ref = weakref.ref(self, executor.close)
         self._kill_cursors_executor = executor
-
-        if connect:
-            self._get_topology()
+        executor.open()
 
         self._encrypter = None
         if self.__options.auto_encryption_opts:
@@ -1234,7 +1216,8 @@ class MongoClient(common.BaseObject):
 
     @contextlib.contextmanager
     def _get_socket(self, server, session, exhaust=False):
-        with _MongoClientErrorHandler(self, server, session) as err_handler:
+        with _MongoClientErrorHandler(
+                self, server.description.address, session) as err_handler:
             with server.get_socket(
                     self.__all_credentials, checkout=exhaust) as sock_info:
                 err_handler.contribute_socket(sock_info)
@@ -1275,9 +1258,7 @@ class MongoClient(common.BaseObject):
                     session._pin_mongos(server)
             return server
         except PyMongoError as exc:
-            # Server selection errors in a transaction are transient.
-            if session and session.in_transaction:
-                exc._add_error_label("TransientTransactionError")
+            if session and exc.has_error_label("TransientTransactionError"):
                 session._unpin_mongos()
             raise
 
@@ -1338,7 +1319,8 @@ class MongoClient(common.BaseObject):
                 operation.read_preference, operation.session, address=address)
 
             with _MongoClientErrorHandler(
-                    self, server, operation.session) as err_handler:
+                    self, server.description.address,
+                    operation.session) as err_handler:
                 err_handler.contribute_socket(operation.exhaust_mgr.sock)
                 return server.run_operation_with_response(
                     operation.exhaust_mgr.sock,
@@ -1373,11 +1355,6 @@ class MongoClient(common.BaseObject):
         """
         retryable = (retryable and self.retry_writes
                      and session and not session.in_transaction)
-        return self._retry_internal(retryable, func, session, bulk)
-
-    def _retry_internal(self, retryable, func, session, bulk):
-        """Internal retryable write helper."""
-        max_wire_version = 0
         last_error = None
         retrying = False
 
@@ -1386,7 +1363,7 @@ class MongoClient(common.BaseObject):
         # Increment the transaction id up front to ensure any retry attempt
         # will use the proper txnNumber, even if server or socket selection
         # fails before the command can be sent.
-        if retryable and session and not session.in_transaction:
+        if retryable:
             session._start_retryable_write()
             if bulk:
                 bulk.started_retryable_write = True
@@ -1398,7 +1375,6 @@ class MongoClient(common.BaseObject):
                     session is not None and
                     server.description.retryable_writes_supported)
                 with self._get_socket(server, session) as sock_info:
-                    max_wire_version = sock_info.max_wire_version
                     if retryable and not supports_session:
                         if is_retrying():
                             # A retry is not possible because this server does
@@ -1416,12 +1392,40 @@ class MongoClient(common.BaseObject):
                 # be a persistent outage. Attempting to retry in this case will
                 # most likely be a waste of time.
                 raise
-            except Exception as exc:
-                if not retryable:
+            except ConnectionFailure as exc:
+                if not retryable or is_retrying():
                     raise
-                # Add the RetryableWriteError label.
-                if (not _retryable_writes_error(exc, max_wire_version)
-                        or is_retrying()):
+                if bulk:
+                    bulk.retrying = True
+                else:
+                    retrying = True
+                last_error = exc
+            except BulkWriteError as exc:
+                if not retryable or is_retrying():
+                    raise
+                # Check the last writeConcernError to determine if this
+                # BulkWriteError is retryable.
+                wces = exc.details['writeConcernErrors']
+                wce = wces[-1] if wces else {}
+                if wce.get('code', 0) not in helpers._RETRYABLE_ERROR_CODES:
+                    raise
+                if bulk:
+                    bulk.retrying = True
+                else:
+                    retrying = True
+                last_error = exc
+            except OperationFailure as exc:
+                # retryWrites on MMAPv1 should raise an actionable error.
+                if (exc.code == 20 and
+                        str(exc).startswith("Transaction numbers")):
+                    errmsg = (
+                        "This MongoDB deployment does not support "
+                        "retryable writes. Please add retryWrites=false "
+                        "to your connection string.")
+                    raise OperationFailure(errmsg, exc.code, exc.details)
+                if not retryable or is_retrying():
+                    raise
+                if exc.code not in helpers._RETRYABLE_ERROR_CODES:
                     raise
                 if bulk:
                     bulk.retrying = True
@@ -1486,9 +1490,13 @@ class MongoClient(common.BaseObject):
         with self._tmp_session(session) as s:
             return self._retry_with_session(retryable, func, s, None)
 
-    def _handle_getlasterror(self, address, error_msg):
+    def _reset_server(self, address):
+        """Clear our connection pool for a server and mark it Unknown."""
+        self._topology.reset_server(address)
+
+    def _reset_server_and_request_check(self, address):
         """Clear our pool for a server, mark it Unknown, and check it soon."""
-        self._topology.handle_getlasterror(address, error_msg)
+        self._topology.reset_server_and_request_check(address)
 
     def __eq__(self, other):
         if isinstance(other, self.__class__):
@@ -1738,7 +1746,7 @@ class MongoClient(common.BaseObject):
         maintain connection pool parameters."""
         self._process_kill_cursors()
         try:
-            self._topology.update_pool(self.__all_credentials)
+            self._topology.update_pool()
         except Exception:
             helpers._handle_exception()
 
@@ -2152,66 +2160,20 @@ class MongoClient(common.BaseObject):
     next = __next__
 
 
-def _retryable_error_doc(exc):
-    """Return the server response from PyMongo exception or None."""
-    if isinstance(exc, BulkWriteError):
-        # Check the last writeConcernError to determine if this
-        # BulkWriteError is retryable.
-        wces = exc.details['writeConcernErrors']
-        wce = wces[-1] if wces else None
-        return wce
-    if isinstance(exc, (NotMasterError, OperationFailure)):
-        return exc.details
-    return None
-
-
-def _retryable_writes_error(exc, max_wire_version):
-    doc = _retryable_error_doc(exc)
-    if doc:
-        code = doc.get('code', 0)
-        # retryWrites on MMAPv1 should raise an actionable error.
-        if (code == 20 and
-                str(exc).startswith("Transaction numbers")):
-            errmsg = (
-                "This MongoDB deployment does not support "
-                "retryable writes. Please add retryWrites=false "
-                "to your connection string.")
-            raise OperationFailure(errmsg, code, exc.details)
-        if max_wire_version >= 9:
-            # MongoDB 4.4+ utilizes RetryableWriteError.
-            return 'RetryableWriteError' in doc.get('errorLabels', [])
-        else:
-            if code in helpers._RETRYABLE_ERROR_CODES:
-                exc._add_error_label("RetryableWriteError")
-                return True
-            return False
-
-    if isinstance(exc, ConnectionFailure):
-        exc._add_error_label("RetryableWriteError")
-        return True
-    return False
-
-
 class _MongoClientErrorHandler(object):
-    """Handle errors raised when executing an operation."""
-    __slots__ = ('client', 'server_address', 'session', 'max_wire_version',
-                 'sock_generation')
+    """Error handler for MongoClient."""
+    __slots__ = ('_client', '_server_address', '_session', '_max_wire_version')
 
-    def __init__(self, client, server, session):
-        self.client = client
-        self.server_address = server.description.address
-        self.session = session
-        self.max_wire_version = common.MIN_WIRE_VERSION
-        # XXX: When get_socket fails, this generation could be out of date:
-        # "Note that when a network error occurs before the handshake
-        # completes then the error's generation number is the generation
-        # of the pool at the time the connection attempt was started."
-        self.sock_generation = server.pool.generation
+    def __init__(self, client, server_address, session):
+        self._client = client
+        self._server_address = server_address
+        self._session = session
+        self._max_wire_version = None
 
     def contribute_socket(self, sock_info):
         """Provide socket information to the error handler."""
-        self.max_wire_version = sock_info.max_wire_version
-        self.sock_generation = sock_info.generation
+        # Currently, we only extract the max_wire_version information.
+        self._max_wire_version = sock_info.max_wire_version
 
     def __enter__(self):
         return self
@@ -2220,16 +2182,45 @@ class _MongoClientErrorHandler(object):
         if exc_type is None:
             return
 
-        if self.session:
-            if issubclass(exc_type, ConnectionFailure):
-                if self.session.in_transaction:
-                    exc_val._add_error_label("TransientTransactionError")
-                self.session._server_session.mark_dirty()
+        if issubclass(exc_type, PyMongoError):
+            if self._session and exc_val.has_error_label(
+                    "TransientTransactionError"):
+                self._session._unpin_mongos()
 
-            if issubclass(exc_type, PyMongoError):
-                if exc_val.has_error_label("TransientTransactionError"):
-                    self.session._unpin_mongos()
-
-        err_ctx = _ErrorContext(
-            exc_val, self.max_wire_version, self.sock_generation)
-        self.client._topology.handle_error(self.server_address, err_ctx)
+        if issubclass(exc_type, NetworkTimeout):
+            # The socket has been closed. Don't reset the server.
+            # Server Discovery And Monitoring Spec: "When an application
+            # operation fails because of any network error besides a socket
+            # timeout...."
+            if self._session:
+                self._session._server_session.mark_dirty()
+        elif issubclass(exc_type, NotMasterError):
+            # As per the SDAM spec if:
+            #   - the server sees a "not master" error, and
+            #   - the server is not shutting down, and
+            #   - the server version is >= 4.2, then
+            # we keep the existing connection pool, but mark the server type
+            # as Unknown and request an immediate check of the server.
+            # Otherwise, we clear the connection pool, mark the server as
+            # Unknown and request an immediate check of the server.
+            err_code = exc_val.details.get('code', -1)
+            is_shutting_down = err_code in helpers._SHUTDOWN_CODES
+            if (is_shutting_down or (self._max_wire_version is None) or
+                    (self._max_wire_version <= 7)):
+                # Clear the pool, mark server Unknown and request check.
+                self._client._reset_server_and_request_check(
+                    self._server_address)
+            else:
+                self._client._topology.mark_server_unknown_and_request_check(
+                    self._server_address)
+        elif issubclass(exc_type, ConnectionFailure):
+            # "Client MUST replace the server's description with type Unknown
+            # ... MUST NOT request an immediate check of the server."
+            self._client._reset_server(self._server_address)
+            if self._session:
+                self._session._server_session.mark_dirty()
+        elif issubclass(exc_type, OperationFailure):
+            # Do not request an immediate check since the server is likely
+            # shutting down.
+            if exc_val.code in helpers._RETRYABLE_ERROR_CODES:
+                self._client._reset_server(self._server_address)

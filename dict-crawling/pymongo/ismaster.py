@@ -156,24 +156,3 @@ class IsMaster(object):
     @property
     def compressors(self):
         return self._doc.get('compression')
-
-    @property
-    def sasl_supported_mechs(self):
-        """Supported authentication mechanisms for the current user.
-
-        For example::
-
-            >>> ismaster.sasl_supported_mechs
-            ["SCRAM-SHA-1", "SCRAM-SHA-256"]
-
-        """
-        return self._doc.get('saslSupportedMechs', [])
-
-    @property
-    def speculative_authenticate(self):
-        """The speculativeAuthenticate field."""
-        return self._doc.get('speculativeAuthenticate')
-
-    @property
-    def topology_version(self):
-        return self._doc.get('topologyVersion')
