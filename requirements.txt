@@ -49,6 +49,7 @@ pillow
 
 ########################            Developing Tools            ########################
 # MongoDB database
+# instead of install from pip, download its source to project folder
 pymongo
 
 ########################            Developing Tools            ########################

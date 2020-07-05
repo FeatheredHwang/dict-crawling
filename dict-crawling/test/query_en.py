@@ -1,9 +1,5 @@
-# import re
-import hashlib
 import logging
 import os
-from typing import List
-
 import pymongo
 
 import scrapy
@@ -15,8 +11,7 @@ from scrapy.utils.python import to_bytes
 from w3lib.html import remove_tags
 
 
-print('__file__={0:<35} | __name__={1:<20} | __package__={2:<20}'.format(__file__, __name__, str(__package__)))
-
+logging.info('__file__={0:<35} | __name__={1:<20} | __package__={2:<20}'.format(__file__, __name__, str(__package__)))
 
 # Create an instance of class TakeFirst
 take_first = TakeFirst()
@@ -112,34 +107,33 @@ class CamDictSpider(scrapy.Spider):
         # TODO (Archive) What if the required User-Agent changed? How to correct it automatically?
         "USER_AGENT": 'Mozilla/5.0 (X11; Linux x86_64) '
                       'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.97 Safari/537.36',
+        # TODO Alert path need to be changed when copy to master branch
         'ITEM_PIPELINES': {
-            # 'scrapy.pipelines.files.FilesPipeline': 300
-            'dict-crawling.testing.query_en.UKPronPipeline': 10,
-            'dict-crawling.testing.query_en.MongoPipeline': 100,
+            # download audio files through this pipeline
+            'dict-crawling.test.query_en.UKPronPipeline': 10,
+            'dict-crawling.test.query_en.MongoPipeline': 100,
         },
         'FILES_STORE': os.path.dirname(__file__),
         'MONGO_URI': 'mongodb://localhost:27017',
-        'MONGO_DATABASE': 'new-expressions',
-        'MONGO_COLLECTION': 'scrapy_cambridge_dict'
+        'MONGO_DATABASE': 'new-exprs',
+        'MONGO_COLLECTION': 'en',
     }
 
-    def __init__(self, exprs: List[str] = [], *args, **kwargs):
+    def __init__(self, exprs=None, *args, **kwargs):
         """
         :param exprs: string or a list of string
         :param args:
         :param kwargs:
         """
         super(CamDictSpider, self).__init__(*args, **kwargs)
-        # TODO this line is used for test, delete it later
-        exprs = ['recoil', 'blow OFF', ' spELL', 'spell', 'selected', 'selecting']
+        if exprs is None:
+            exprs = []
         for expr in exprs:
-            self.exprs.append(expr.lower().split())
-
-        print(self.exprs)
+            self.exprs.append(expr.lower())
+        logging.info('List expressions to query:\n{}'.format(self.exprs))
 
     def start_requests(self):
         for q in self.exprs:
-            print(q)
             yield scrapy.Request(
                 'https://dictionary.cambridge.org/dictionary/english/%s' % q,
                 callback=self.parse,
@@ -148,7 +142,7 @@ class CamDictSpider(scrapy.Spider):
 
     def parse(self, response):
 
-        print(response.url)
+        logging.debug('Query url: {}'.format(response.url))
 
         # IF redirect needed, follow the redirect link.
         # For example, 'selected' is the past simple and past participle of 'select',
@@ -188,7 +182,11 @@ class CamDictSpider(scrapy.Spider):
         return il.load_item()
 
 
-if __name__ == '__main__':
-    process = CrawlerProcess()
-    process.crawl(CamDictSpider)
-    process.start()
+# if __name__ == '__main__':
+#     logging.basicConfig(level=logging.DEBUG,
+#                         format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
+#                         datefmt='%m-%d %H:%M',
+#                         filename=os.path.join(os.path.dirname(__file__), 'general.log'), )
+#     process = CrawlerProcess()
+#     process.crawl(CamDictSpider, exprs=['test', 'another'])
+#     process.start()
